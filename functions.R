@@ -252,3 +252,274 @@ ct_umap_plot <- function(data, col, colours = NULL, title = NULL, legend_title =
         theme_test() +
         labs(title = title)
 }
+
+
+
+
+
+cc_plot <- function(ccdata, hdata, g1s, g2m, min_pts = 30, ngene = 15) {
+
+    if(nrow(ccdata) < min_pts) return(NULL)
+    
+    if(!('cell_type' %in% names(ccdata))) {
+        
+        scatter <- ggplot(ccdata, aes(x = g1s_score, y = g2m_score, colour = phase)) +
+            scale_colour_manual(values = setNames(c('grey', brewer.pal(3, 'Dark2')), c('Not cycling', 'G1/S', 'Intermediate', 'G2/M'))) +
+            geom_point(alpha = 0.5) +
+            annotate(
+                'text',
+                x = ccdata[, min(g1s_score) + 0.85*diff(range(g1s_score))],
+                y = ccdata[, min(g2m_score) + 0.95*diff(range(g2m_score))],
+                label = paste(percent(ccdata[, nrow(.SD[phase != 'Not cycling'])/.N], accuracy = 0.1), 'cycling cells')
+            ) +
+            theme_test()
+        
+        htmp_pair <- slapply(
+            c('g1s', 'g2m'),
+            function(x) {
+                ggplot(hdata[[1]]$data[gene %in% get(x)], aes(x = cell_name, y = gene, fill = exp_level)) +
+                    geom_raster() +
+                    scale_fill_gradientn(
+                        colours = brewer.pal(9, 'Reds'),
+                        limits = c(1, 5),
+                        breaks = 1:5,
+                        labels = c('1' = '\u2264 1', '2' = '2', '3' = '3', '4' = '4', '5' = '\u2265 5'),
+                        oob = squish
+                    ) +
+                    scale_x_discrete(expand = c(0, 0)) +
+                    scale_y_discrete(expand = c(0, 0)) +
+                    geom_vline(xintercept = hdata[[1]]$vline[-1] + 0.5) +
+                    theme(
+                        axis.text = element_blank(),
+                        axis.ticks = element_blank(),
+                        axis.ticks.length = unit(0, 'pt'),
+                        axis.title = element_blank(),
+                        panel.border = element_rect(fill = NA, size = 1),
+                        legend.justification = c(0, 0.2),
+                        plot.margin = unit(c(0, 5.5, 0, 0), 'pt')
+                    ) +
+                    labs(fill = 'Relative\nexpression\nlevel')
+            }
+        )
+        
+        annots <- slapply(
+            c('g1s', 'g2m'),
+            function(sig) {
+                out <- tableGrob(
+                    data.table(a = c(rev(tail(levels(hdata[[1]]$data$gene)[levels(hdata[[1]]$data$gene) %in% get(sig)], ngene)), '')),
+                    theme = ttheme_minimal(
+                        rowhead = list(padding = unit(c(0, 0), "pt"), fg_params = list(cex = 0)),
+                        colhead = list(padding = unit(c(0, 0), "pt"), fg_params = list(cex = 0)),
+                        core = list(padding = unit(c(5, 5), "pt"), fg_params = list(hjust = 1, x = 0.9)),
+                        base_size = 9
+                    )
+                )
+                out <- gtable_add_grob(
+                    out,
+                    grobs = segmentsGrob(x0 = unit(0, "npc"), y0 = unit(1, "npc"), x1 = unit(1, "npc"), y1 = unit(1, "npc"), gp = gpar(lwd = 2.0)),
+                    t = 2, b = 2, l = 1, r = 2
+                )
+                out <- gtable_add_grob(
+                    out,
+                    grobs = segmentsGrob(x0 = unit(0, "npc"), y0 = unit(0, "npc"), x1 = unit(1, "npc"), y1 = unit(0, "npc"), gp = gpar(lwd = 2.0)),
+                    t = ngene + 2, b = ngene + 2, l = 1, r = 2
+                )
+                out$widths <- unit(c(0, 1), 'npc')
+                out$heights[length(out$heights)] <- unit(1, 'npc') - sum(out$heights[-length(out$heights)])
+                out
+            }
+        )
+        
+        phase_bar <- ggplot(hdata[[1]]$data, aes(x = cell_name, y = 0, fill = phase)) +
+            geom_raster() +
+            scale_fill_manual(values = setNames(c('grey', brewer.pal(3, 'Dark2')), c('Not cycling', 'G1/S', 'Intermediate', 'G2/M'))) +
+            scale_x_discrete(expand = c(0, 0)) +
+            scale_y_continuous(expand = c(0, 0)) +
+            theme(
+                axis.text = element_blank(),
+                axis.ticks = element_blank(),
+                axis.ticks.length = unit(0, 'pt'),
+                axis.title = element_blank(),
+                legend.justification = c(0, 1),
+                plot.margin = unit(c(5.5, 5.5, 5.5, 0), 'pt')
+            )
+        
+        return(
+            list(
+                scatter = scatter,
+                heatmap = plot_grid(
+                    plot_grid(
+                        blank_plot(),
+                        blank_plot(),
+                        phase_bar + theme(legend.position = 'none'),
+                        ggplot() + theme(panel.background = element_blank()) + labs(y = 'G2/M genes'),
+                        annots$g2m,
+                        htmp_pair$g2m + theme(legend.position = 'none'),
+                        ggplot() + theme(panel.background = element_blank()) + labs(y = 'G1/S genes'),
+                        annots$g1s,
+                        htmp_pair$g1s + theme(legend.position = 'none'),
+                        blank_plot(),
+                        blank_plot(),
+                        ggplot() +
+                            theme(panel.background = element_blank(), plot.title = element_text(hjust = 0.5, size = 11)) +
+                            labs(title = 'Cells'),
+                        nrow = 4,
+                        ncol = 3,
+                        rel_widths = c(0.5, 1, 8.5),
+                        rel_heights = c(0.04, 0.45, 0.45, 0.06)
+                    ),
+                    plot_grid(get_legend(phase_bar), get_legend(htmp_pair$g1s), nrow = 2, ncol = 1),
+                    nrow = 1,
+                    ncol = 2,
+                    rel_widths = c(0.84, 0.16)
+                )
+            )
+        )
+        
+    } else {
+        
+        cts <- ccdata[, .(N = .N), by = cell_type][N >= min_pts, cell_type]
+        if(length(cts) == 0) return(NULL)
+        
+        lim_x <- ccdata[cell_type %in% cts, c(min(g1s_score), max(g1s_score))]
+        lim_y <- ccdata[cell_type %in% cts, c(min(g2m_score), max(g2m_score))]
+        scatter <- slapply(
+            cts,
+            function(ct) ggplot(ccdata[cell_type == ct], aes(x = g1s_score, y = g2m_score, colour = phase)) +
+                scale_x_continuous(limits = lim_x) +
+                scale_y_continuous(limits = lim_y) +
+                scale_colour_manual(values = setNames(c('grey', brewer.pal(3, 'Dark2')), c('Not cycling', 'G1/S', 'Intermediate', 'G2/M'))) +
+                geom_point(alpha = 0.5) +
+                annotate(
+                    'text',
+                    x = min(lim_x) + 0.85*diff(range(lim_x)),
+                    y = min(lim_y) + 0.95*diff(range(lim_y)),
+                    label = paste(percent(ccdata[cell_type == ct, nrow(.SD[phase != 'Not cycling'])/.N], accuracy = 0.1), 'cycling cells')
+                ) +
+                labs(x = 'G1/S score', y = 'G2/M score', colour = 'Phase') +
+                theme_test()
+        )
+        
+        htmps <- slapply(
+            hdata,
+            function(li) {
+                
+                htmp_pair <- slapply(
+                    c('g1s', 'g2m'),
+                    function(x) {
+                        ggplot(li$data[gene %in% get(x)], aes(x = cell_name, y = gene, fill = exp_level)) +
+                            geom_raster() +
+                            scale_fill_gradientn(
+                                colours = brewer.pal(9, 'Reds'),
+                                limits = c(1, 5),
+                                breaks = 1:5,
+                                labels = c('1' = '\u2264 1', '2' = '2', '3' = '3', '4' = '4', '5' = '\u2265 5'),
+                                oob = squish
+                            ) +
+                            scale_x_discrete(expand = c(0, 0)) +
+                            scale_y_discrete(expand = c(0, 0)) +
+                            geom_vline(xintercept = li$vline[-1] + 0.5) +
+                            theme(
+                                axis.text = element_blank(),
+                                axis.ticks = element_blank(),
+                                axis.ticks.length = unit(0, 'pt'),
+                                axis.title = element_blank(),
+                                panel.border = element_rect(fill = NA, size = 1),
+                                legend.justification = c(0, 0.2),
+                                plot.margin = unit(c(0, 5.5, 0, 0), 'pt')
+                            ) +
+                            labs(fill = 'Relative\nexpression\nlevel')
+                    }
+                )
+                
+                annots <- slapply(
+                    c('g1s', 'g2m'),
+                    function(sig) {
+                        out <- tableGrob(
+                            data.table(a = c(rev(tail(levels(li$data$gene)[levels(li$data$gene) %in% get(sig)], ngene)), '')),
+                            theme = ttheme_minimal(
+                                rowhead = list(padding = unit(c(0, 0), "pt"), fg_params = list(cex = 0)),
+                                colhead = list(padding = unit(c(0, 0), "pt"), fg_params = list(cex = 0)),
+                                core = list(padding = unit(c(5, 5), "pt"), fg_params = list(hjust = 1, x = 0.9)),
+                                base_size = 9
+                            )
+                        )
+                        out <- gtable_add_grob(
+                            out,
+                            grobs = segmentsGrob(
+                                x0 = unit(0, "npc"),
+                                y0 = unit(1, "npc"),
+                                x1 = unit(1, "npc"),
+                                y1 = unit(1, "npc"),
+                                gp = gpar(lwd = 2.0)
+                            ),
+                            t = 2, b = 2, l = 1, r = 2
+                        )
+                        out <- gtable_add_grob(
+                            out,
+                            grobs = segmentsGrob(
+                                x0 = unit(0, "npc"),
+                                y0 = unit(0, "npc"),
+                                x1 = unit(1, "npc"),
+                                y1 = unit(0, "npc"),
+                                gp = gpar(lwd = 2.0)
+                            ),
+                            t = ngene + 2, b = ngene + 2, l = 1, r = 2
+                        )
+                        out$widths <- unit(c(0, 1), 'npc')
+                        out$heights[length(out$heights)] <- unit(1, 'npc') - sum(out$heights[-length(out$heights)])
+                        out
+                    }
+                )
+                
+                phase_bar <- ggplot(li$data, aes(x = cell_name, y = 0, fill = phase)) +
+                    geom_raster() +
+                    scale_fill_manual(values = setNames(c('grey', brewer.pal(3, 'Dark2')), c('Not cycling', 'G1/S', 'Intermediate', 'G2/M'))) +
+                    scale_x_discrete(expand = c(0, 0)) +
+                    scale_y_continuous(expand = c(0, 0)) +
+                    theme(
+                        axis.text = element_blank(),
+                        axis.ticks = element_blank(),
+                        axis.ticks.length = unit(0, 'pt'),
+                        axis.title = element_blank(),
+                        legend.justification = c(0, 1),
+                        plot.margin = unit(c(5.5, 5.5, 5.5, 0), 'pt')
+                    )
+                
+                return(
+                    plot_grid(
+                        plot_grid(
+                            blank_plot(),
+                            blank_plot(),
+                            phase_bar + theme(legend.position = 'none'),
+                            ggplot() + theme(panel.background = element_blank()) + labs(y = 'G2/M genes'),
+                            annots$g2m,
+                            htmp_pair$g2m + theme(legend.position = 'none'),
+                            ggplot() + theme(panel.background = element_blank()) + labs(y = 'G1/S genes'),
+                            annots$g1s,
+                            htmp_pair$g1s + theme(legend.position = 'none'),
+                            blank_plot(),
+                            blank_plot(),
+                            ggplot() +
+                                theme(panel.background = element_blank(), plot.title = element_text(hjust = 0.5, size = 11)) +
+                                labs(title = 'Cells'),
+                            nrow = 4,
+                            ncol = 3,
+                            rel_widths = c(0.5, 1, 8.5),
+                            rel_heights = c(0.04, 0.45, 0.45, 0.06)
+                        ),
+                        plot_grid(get_legend(phase_bar), get_legend(htmp_pair$g1s), nrow = 2, ncol = 1),
+                        nrow = 1,
+                        ncol = 2,
+                        rel_widths = c(0.84, 0.16)
+                    )
+                )
+                
+            }
+        )
+        
+        return(list(scatter = scatter, heatmap = htmps))
+        
+    }
+
+}

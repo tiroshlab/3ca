@@ -1,5 +1,9 @@
-# Command line arguments of Rscript should supply study name and cancer type (in that order).
+# The command line arguments should supply study name and cancer type (in that order).
 r = commandArgs(trailingOnly = TRUE)
+
+
+
+
 
 library(data.table)
 library(ggplot2)
@@ -13,18 +17,21 @@ library(matkot)
 
 source('functions.R')
 
-study_folder_map <- fread('../data/study_folder_map.csv', encoding = 'UTF-8')
-paths_table <- fread('../data/paths_table.csv', key = c('study', 'cancer_type'))
+paths_table <- fread('../data/paths_table.csv', encoding = 'UTF-8', key = c('study', 'cancer_type'))
+
+
+
+
 
 paths <- apply(paths_table[as.list(r), .(cells, genes, expmat)], 1, as.list, simplify = FALSE)
 
 out <- lapply(paths, function(p) {
-        
+    
     if(endsWith(p$expmat, 'mtx')) {
         
         cells <- suppressWarnings(fread(p$cells, na.strings = ''))
         
-        cells$cell_name <- as.character(cells$cell_name) # In case cell names are the same as row numbers
+        cells$cell_name <- as.character(cells$cell_name)
         
         if(cells[, .N > length(unique(cell_name))]) cells[, cell_name := paste(cell_name, .I, sep = '_')]
         
@@ -37,7 +44,7 @@ out <- lapply(paths, function(p) {
         cells <- cells[complexity >= 1000]
         expmat <- round(log_transform(1e+05*to_frac(expmat[, cells$cell_name])), 4)
         
-        # Filtered gene list, after removing lowly expressed genes (to use in UMAP, else "Cholmod error 'problem too large'"):
+        # Filtered gene list, after removing lowly expressed genes:
         if('sample' %in% names(cells)) {
             filtered_genes <- cells[
                 sample %in% cells[, .(N = .N), by = sample][N >= 10, sample],

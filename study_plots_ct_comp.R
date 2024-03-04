@@ -1,3 +1,5 @@
+# bsub -q new-medium -R "select[model=Intel_Skylake] rusage[mem=32000]" -oo log/study_plots_ct_comp.o -eo log/study_plots_ct_comp.e Rscript study_plots_ct_comp.R
+
 library(data.table)
 library(ggplot2)
 library(magrittr)
@@ -13,97 +15,81 @@ try(library(randomcoloR), silent = TRUE)
 
 source('functions.R')
 
-study_folder_map <- fread('../data/study_folder_map.csv')
+paths_table <- fread('../data/paths_table.csv', encoding = 'UTF-8', key = c('study', 'cancer_type'))
 
 
 
 
 
-for(r in transpose(as.list(unique(study_folder_map[study != 'Kinker et al. 2020', .(study, cancer_type)])))) {
+for(r in transpose(as.list(unique(paths_table[, .(study, cancer_type)])))) {
     
     cat(r, '\n')
     
-    if('data_ct_comp.RDS' %in% dir(paste0('../data/study_plots/', gsub('/', '-', r[2]), '/', r[1]))) {
+    if(all(c('data_ct_comp.RDS', 'Cell types.pdf') %in% dir(paste0('../data/study_plots/', gsub('/', '-', r[2]), '/', r[1])) == c(TRUE, FALSE))) {
         
         plot_data <- readRDS(paste0('../data/study_plots/', gsub('/', '-', r[2]), '/', r[1], '/data_ct_comp.RDS'))
         
         nullcond <- sapply(plot_data, function(x) ifelse(is.null(x), TRUE, all(sapply(x[names(x) != 'path'], is.null))))
         if(all(nullcond)) next
         
-        out <- lapply(
-            which(!nullcond),
-            function(i) {
-                
-                # To use in plot titles:
-                if(sum(!nullcond) > 1) {
-                    title_tail <- str_split_fixed(
-                        plot_data[[i]]$path$cells,
-                        paste0(study_folder_map[study == r[1] & cancer_type == r[2], directory], '/'),
-                        2
-                    )[, 2]
-                    if(grepl('/', title_tail)) {
-                        title_tail <- str_split(title_tail, '/')[[1]][1]
-                        if(sum(study_folder_map$study == r[1]) == 1) {
-                            title_tail <- paste0(r[1], ', ', title_tail)
-                        } else {
-                            title_tail <- paste0(r[1], ' (', r[2], '), ', title_tail)
-                        }
-                    } else {
-                        if(sum(study_folder_map$study == r[1]) == 1) {
-                            title_tail <- paste0(r[1], ', Group ', i)
-                        } else {
-                            title_tail <- paste0(r[1], ' (', r[2], '), Group ', i)
-                        }
-                    }
+        out <- lapply(which(!nullcond), function(i) {
+            
+            # To use in plot titles:
+            if(sum(unique(paths_table[, .(study, cancer_type)])$study == r[1]) == 1) {
+                if(paths_table[as.list(r), .N] > 1) {
+                    title_tail <- paste0(r[1], ' - ', paths_table[as.list(r)][i, if(group_name == '') paste('Group', group) else group_name])
                 } else {
-                    if(sum(study_folder_map$study == r[1]) == 1) {
-                        title_tail <- r[1]
-                    } else {
-                        title_tail <- paste0(r[1], ' (', r[2], ')')
-                    }
+                    title_tail <- r[1]
+                }
+            } else {
+                if(paths_table[as.list(r), .N] > 1) {
+                    title_tail <- paste0(r[1], ', ', r[2], ' - ', paths_table[as.list(r)][i, if(group_name == '') paste('Group', group) else
+                        group_name])
+                } else {
+                    title_tail <- paste0(r[1], ', ', r[2])
+                }
+            }
+            
+            if(!is.null(plot_data[[i]]$data)) {
+                
+                pdata <- plot_data[[i]]$data
+                
+                marker_cond <- 'marker_plot_data' %in% names(pdata) &&
+                    pdata$marker_plot_data[, length(unique(gene)) > 1 & length(unique(cell_type)) > 1]
+                if('marker_plot_data' %in% names(pdata) && pdata$marker_plot_data[, length(unique(gene)) < 10]) {
+                    leg_arr <- 'horizontal'
+                } else {leg_arr <- 'vertical'}
+                
+                if('randomcoloR' %in% .packages(TRUE)) {
+                    set.seed(9728)
+                    plot_colours <- pdata$pie_data[, setNames(distinctColorPalette(.N), cell_type)]
+                    plot_out <- do.call(
+                        ct_comp_plot,
+                        args = c(switch(marker_cond + 1, pdata['pie_data'], pdata), list(colours = plot_colours, legends_arrange = leg_arr))
+                    )
+                } else {
+                    plot_out <- do.call(
+                        ct_comp_plot,
+                        args = c(switch(marker_cond + 1, pdata['pie_data'], pdata), list(legends_arrange = leg_arr))
+                    )
                 }
                 
-                if(!is.null(plot_data[[i]]$data)) {
-                    
-                    pdata <- plot_data[[i]]$data
-                    
-                    marker_cond <- 'marker_plot_data' %in% names(pdata) &&
-                        pdata$marker_plot_data[, length(unique(gene)) > 1 & length(unique(cell_type)) > 1]
-                    if('marker_plot_data' %in% names(pdata) && pdata$marker_plot_data[, length(unique(gene)) < 10]) {
-                        leg_arr <- 'horizontal'
-                    } else {leg_arr <- 'vertical'}
-                    
-                    if('randomcoloR' %in% .packages(TRUE)) {
-                        set.seed(9728)
-                        plot_colours <- pdata$pie_data[, setNames(distinctColorPalette(.N), cell_type)]
-                        plot_out <- do.call(
-                            ct_comp_plot,
-                            args = c(switch(marker_cond + 1, pdata['pie_data'], pdata), list(colours = plot_colours, legends_arrange = leg_arr))
-                        )
-                    } else {
-                        plot_out <- do.call(
-                            ct_comp_plot,
-                            args = c(switch(marker_cond + 1, pdata['pie_data'], pdata), list(legends_arrange = leg_arr))
-                        )
-                    }
-                    
-                    if(marker_cond) {
-                        plot_title <- paste0('Cell type composition and marker gene expression in ', title_tail)
-                    } else {plot_title <- paste0('Cell type composition in ', title_tail)}
-                    
-                    return(list(plot_out = plot_out, plot_title = plot_title, leg_arr = leg_arr))
-                    
-                }
+                if(marker_cond) {
+                    plot_title <- paste0('Cell type composition and marker gene expression in ', title_tail)
+                } else {plot_title <- paste0('Cell type composition in ', title_tail)}
+                
+                return(list(plot_out = plot_out, plot_title = plot_title, leg_arr = leg_arr))
                 
             }
-        )
+            
+        })
         
-        # A4 page is 210x297mm. Allow 20mm for the title and 15mm each for the "A" and "B" labels.
+        # A4 page is 210x297mm.  Here, I'm allowing 20mm for the title and 15mm each for the "A" and "B" labels.
         rmdlines <- c(
             '---\n',
             'title: ""\n',
             'header-includes:\n',
-            ' \\renewcommand{\\familydefault}{\\sfdefault}\n',
+            ' \\renewcommand{\\familydefault}{\\sfdefault}\n', # Indent is important but must use spaces, NOT tabs!
             ' \\pagenumbering{gobble}\n',
             'geometry: margin=1cm\n',
             'output: pdf_document\n',

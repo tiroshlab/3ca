@@ -1,3 +1,5 @@
+# bsub -q new-medium -R "select[model=Intel_Skylake] rusage[mem=32000]" -oo log/study_plots_ct_umap.o -eo log/study_plots_ct_umap.e Rscript study_plots_ct_umap.R
+
 library(data.table)
 library(ggplot2)
 library(magrittr)
@@ -13,17 +15,17 @@ try(library(randomcoloR), silent = TRUE)
 
 source('functions.R')
 
-study_folder_map <- fread('../data/study_folder_map.csv')
+paths_table <- fread('../data/paths_table.csv', encoding = 'UTF-8', key = c('study', 'cancer_type'))
 
 
 
 
 
-for(r in transpose(as.list(unique(study_folder_map[study != 'Kinker et al. 2020', .(study, cancer_type)])))) {
+for(r in transpose(as.list(unique(paths_table[, .(study, cancer_type)])))) {
     
     cat(r, '\n')
     
-    if('data_ct_umap.RDS' %in% dir(paste0('../data/study_plots/', gsub('/', '-', r[2]), '/', r[1]))) {
+    if(all(c('data_ct_umap.RDS', 'UMAP.pdf') %in% dir(paste0('../data/study_plots/', gsub('/', '-', r[2]), '/', r[1])) == c(TRUE, FALSE))) {
         
         plot_data <- readRDS(paste0('../data/study_plots/', gsub('/', '-', r[2]), '/', r[1], '/data_ct_umap.RDS'))
         
@@ -42,7 +44,6 @@ for(r in transpose(as.list(unique(study_folder_map[study != 'Kinker et al. 2020'
             plot_colours <- slapply(
                 c('cell_type', 'sample'),
                 function(vn) {
-                    # Add condition so that we don't run distinctColorPalette on NULL.
                     vn_unique <- unique(unlist(lapply(plot_colours, function(x) if(vn %in% names(x)) x[[vn]])))
                     if(!is.null(vn_unique)) setNames(distinctColorPalette(length(vn_unique)), vn_unique)
                 }
@@ -55,31 +56,18 @@ for(r in transpose(as.list(unique(study_folder_map[study != 'Kinker et al. 2020'
             if(!any(c('cell_type', 'sample') %in% names(pdata))) return(NULL)
             
             # To use in plot titles:
-            if(sum(!nullcond) > 1) {
-                title_tail <- str_split_fixed(
-                    plot_data[[i]]$path$cells,
-                    paste0(study_folder_map[study == r[1] & cancer_type == r[2], directory], '/'),
-                    2
-                )[, 2]
-                if(grepl('/', title_tail)) {
-                    title_tail <- str_split(title_tail, '/')[[1]][1]
-                    if(sum(study_folder_map$study == r[1]) == 1) {
-                        title_tail <- paste0(r[1], ', ', title_tail)
-                    } else {
-                        title_tail <- paste0(r[1], ' (', r[2], '), ', title_tail)
-                    }
+            if(sum(unique(paths_table[, .(study, cancer_type)])$study == r[1]) == 1) {
+                if(paths_table[as.list(r), .N] > 1) {
+                    title_tail <- paste0(r[1], ' - ', paths_table[as.list(r)][i, if(group_name == '') paste('Group', group) else group_name])
                 } else {
-                    if(sum(study_folder_map$study == r[1]) == 1) {
-                        title_tail <- paste0(r[1], ', Group ', i)
-                    } else {
-                        title_tail <- paste0(r[1], ' (', r[2], '), Group ', i)
-                    }
+                    title_tail <- r[1]
                 }
             } else {
-                if(sum(study_folder_map$study == r[1]) == 1) {
-                    title_tail <- r[1]
+                if(paths_table[as.list(r), .N] > 1) {
+                    title_tail <- paste0(r[1], ', ', r[2], ' - ', paths_table[as.list(r)][i, if(group_name == '') paste('Group', group) else
+                        group_name])
                 } else {
-                    title_tail <- paste0(r[1], ' (', r[2], ')')
+                    title_tail <- paste0(r[1], ', ', r[2])
                 }
             }
             
@@ -114,12 +102,12 @@ for(r in transpose(as.list(unique(study_folder_map[study != 'Kinker et al. 2020'
         
         if(all(sapply(out, is.null))) next
         
-        # A4 page is 210x297mm.  Allow 20mm for the title and 15mm each for the "A" and "B" labels.
+        # A4 page is 210x297mm.  Here, I'm allowing 20mm for the title and 15mm each for the "A" and "B" labels.
         rmdlines <- c(
             '---\n',
             'title: ""\n',
             'header-includes:\n',
-            ' \\renewcommand{\\familydefault}{\\sfdefault}\n',
+            ' \\renewcommand{\\familydefault}{\\sfdefault}\n', # Indent is important but must use spaces, NOT tabs!
             ' \\pagenumbering{gobble}\n',
             'geometry: margin=1cm\n',
             'output: pdf_document\n',
