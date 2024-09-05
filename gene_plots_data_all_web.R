@@ -64,6 +64,8 @@ gene_ave <- unique(gene_ave)
 
 gene_ave <- gene_ave[!(cancer_type == 'Brain' & cell_type == 'Fibroblast')]
 
+gene_ave <- gene_ave[symbol %in% hgnc_complete_set$symbol]
+
 
 
 

@@ -1217,3 +1217,435 @@ corr_plot_10x <- ggplot(pdata_10x) +
         plot.title.position = 'plot'
     ) +
     labs(x = NULL, y = NULL, fill = 'Correlation', title = 'Correlation of proliferation rates between cell types')
+
+
+
+
+
+# ----------------------------------------------------------------------------------------------------------------------------------------------------
+# Effect of complexity and number of cells
+# ----------------------------------------------------------------------------------------------------------------------------------------------------
+
+tdata2 <- cc_prop[sample == 'all_b' & tech %in% c('10x', 'SmartSeq2')]
+tdata2_sub <- tdata2[, .(n_ss2 = sum(tech == 'SmartSeq2'), n_10x = sum(tech == '10x')), by = .(cell_type, disease)][n_ss2 > 0 & n_10x > 0]
+tdata2_sub <- tdata2_sub[cell_type %in% tdata2_sub[, .(n_ss2 = sum(n_ss2), n_10x = sum(n_10x)), by = cell_type][n_ss2 >= 5 & n_10x >= 5, cell_type]]
+setkey(tdata2, cell_type, disease)
+tdata2 <- tdata2[tdata2_sub[, .(cell_type, disease)]]
+tdata2[, prop := (n_g1s + n_g2m + n_int)/n_cell]
+tdata2[n_g1s + n_g2m + n_int >= 50, phase_bias := (n_g1s - n_g2m)/(n_g1s + n_g2m + n_int)]
+tdata2[, cell_type := gsub('_', ' ', cell_type)]
+
+# Get candidate outliers by looking at residuals:
+tdata2[!is.na(prop) & !is.na(n_gene), o_gene := {
+    r1 <- lm(prop ~ n_gene)$residuals; r2 <- lm(n_gene ~ prop)$residuals
+    r1 > quantile(r1, 0.75) + 1.5*IQR(r1) | r1 < quantile(r1, 0.25) - 1.5*IQR(r1) |
+        r2 > quantile(r2, 0.75) + 1.5*IQR(r2) | r2 < quantile(r2, 0.25) - 1.5*IQR(r2)
+}, by = .(tech, cell_type)]
+tdata2[!is.na(prop) & !is.na(n_cell), o_cell := {
+    r1 <- lm(prop ~ n_cell)$residuals; r2 <- lm(n_cell ~ prop)$residuals
+    r1 > quantile(r1, 0.75) + 1.5*IQR(r1) | r1 < quantile(r1, 0.25) - 1.5*IQR(r1) |
+        r2 > quantile(r2, 0.75) + 1.5*IQR(r2) | r2 < quantile(r2, 0.25) - 1.5*IQR(r2)
+}, by = .(tech, cell_type)]
+
+# Manually choose final list of outliers:
+tdata2[, o_gene := FALSE]
+tdata2[tech == '10x' & cell_type == 'Macrophage' & prop > 0.14, o_gene := TRUE]
+tdata2[tech == '10x' & cell_type == 'T cell' & n_gene > 3000, o_gene := TRUE]
+tdata2[tech == 'SmartSeq2' & cell_type == 'T cell' & prop > 0.5, o_gene := TRUE]
+tdata2[, o_cell := FALSE]
+tdata2[tech == '10x' & cell_type == 'T cell' & prop > 0.24, o_cell := TRUE]
+tdata2[tech == 'SmartSeq2' & cell_type == 'Macrophage' & prop > 0.13, o_cell := TRUE]
+tdata2[tech == 'SmartSeq2' & cell_type == 'T cell' & prop > 0.5, o_cell := TRUE]
+
+rpos <- unique(tdata2[, .(tech, cell_type)])[, .(v = c('n_gene', 'n_cell')), keyby = .(tech, cell_type)]
+rpos[v == 'n_gene', c('x', 'y') := .(c(1, 1, 1, 2, 2, 2, 1, 1), rep(2, 8))]
+rpos[v == 'n_cell', c('x', 'y') := .(c(1, 1, 1, 2, 1, 2, 1, 2), rep(2, 8))]
+setkey(rpos, tech, cell_type, v)
+
+# Proportion of cycling cells against complexity:
+scatter_gene <- slapply(c('10x', 'SmartSeq2'), function(tch) {
+    slapply(tdata2[, sort(unique(cell_type))], function(ct) {
+        dt <- tdata2[tech == tch & cell_type == ct & !is.na(n_gene)][, c('n_gene', 'prop') := .(n_gene/1000, 100*prop)]
+        xlims <- dt[, {
+            l1 <- if(ceiling(min(n_gene)) >= floor(max(n_gene))) floor(min(n_gene)) else min(n_gene)
+            c(l1, max(max(n_gene), l1 + 1))
+        }]
+        ylims <- c(0, dt[, max(10, max(prop))])
+        out <- ggplot(dt, aes(x = n_gene, y = prop)) +
+            geom_point() +
+            scale_x_continuous(breaks = seq(1, tdata2[!is.na(n_gene), floor(max(n_gene))], 1), limits = xlims) +
+            scale_y_continuous(breaks = 100*seq(0, tdata2[, floor(max(10*prop))/10], 0.1), limits = ylims) +
+            theme(
+                panel.grid.minor = element_blank(),
+                panel.grid.major = element_line(linewidth = 0.3, colour = 'grey85'),
+                panel.border = element_rect(fill = NA),
+                panel.background = element_rect(fill = 'white'),
+                strip.background = element_rect(fill = NA),
+                strip.text.x = element_text(size = 16, margin = margin(l = 0, r = 0, t = 2, b = 8)),
+                strip.text.y = element_text(size = 16, margin = margin(l = 8, r = 2, t = 0, b = 0)),
+                axis.text = element_text(size = 14),
+                axis.title = element_blank()
+            )
+        rp <- rpos[.(tch, ct, 'n_gene')]
+        if(any(dt$o_gene)) {
+            out <- out + geom_smooth(data = dt[o_gene == FALSE], method = 'lm', colour = 'blue', se = FALSE)
+            out <- out + geom_smooth(data = dt, method = 'lm', colour = 'red', se = FALSE)
+            out <- out + annotate('text', label = dt[o_gene == FALSE, paste('r =', signif(cor(prop, n_gene), 2))], size = 5, colour = 'blue',
+                x = xlims[rp$x], y = ylims[rp$y], hjust = rp$x - 1, vjust = rp$y - 1)
+            out <- out + annotate('text', label = dt[, paste('r =', signif(cor(prop, n_gene), 2))], size = 5, colour = 'red',
+                x = xlims[rp$x], y = ylims[rp$y] - (rp$y - 1.5)*diff(ylims/5), hjust = rp$x - 1, vjust = rp$y - 1)
+        } else {
+            out <- out + geom_smooth(data = dt, method = 'lm', colour = 'purple', se = FALSE)
+            out <- out + annotate('text', label = dt[, paste('r =', signif(cor(prop, n_gene), 2))], size = 5, colour = 'purple',
+                x = xlims[rp$x], y = ylims[rp$y], hjust = rp$x - 1, vjust = rp$y - 1)
+        }
+        if(tch == '10x' & ct != 'T cell') out <- out + facet_grid(cols = vars(cell_type))
+        if(tch == '10x' & ct == 'T cell') out <- out + facet_grid(cols = vars(cell_type), rows = vars(tech))
+        if(tch == 'SmartSeq2' & ct == 'T cell') out <- out + facet_grid(rows = vars(tech))
+        return(out)
+    })
+})
+scatter_gene_grob <- lapply(unlist(scatter_gene, recursive = FALSE), ggplotGrob)
+lgrob_gene <- length(scatter_gene_grob)
+for(i in 1:lgrob_gene) {
+    l <- length(scatter_gene_grob[[i]]$widths)
+    if(i %in% c(1, lgrob_gene/2 + 1)) {
+        scatter_gene_grob[[i]]$widths[1] <- unit(12, 'mm') # Left margin
+    } else {
+        scatter_gene_grob[[i]]$widths[1] <- unit(2, 'mm') # Left margin
+    }
+    scatter_gene_grob[[i]]$widths[l] <- unit(2, 'mm') # Right margin
+}
+for(i in 1:lgrob_gene) scatter_gene_grob[[i]]$widths[4] <- unit(7, 'mm') # Y axis text space
+for(i in 1:lgrob_gene) scatter_gene_grob[[i]]$widths[5] <- unit(60, 'mm') # Plot area
+for(i in (1:2)*lgrob_gene/2) scatter_gene_grob[[i]]$widths[6] <- unit(7.5, 'mm') # Facet strip space
+for(i in 1:lgrob_gene) {
+    l <- length(scatter_gene_grob[[i]]$heights)
+    scatter_gene_grob[[i]]$heights[1] <- unit(2, 'mm') # Top margin
+    if(i %in% (lgrob_gene/2 + 1):lgrob_gene) {
+        scatter_gene_grob[[i]]$heights[l] <- unit(10, 'mm') # Bottom margin
+    } else {
+        scatter_gene_grob[[i]]$heights[l] <- unit(2, 'mm') # Bottom margin
+    }
+}
+for(i in 1:(lgrob_gene/2)) scatter_gene_grob[[i]]$heights[7] <- unit(7.5, 'mm') # Facet strip space
+for(i in 1:(lgrob_gene/2)) scatter_gene_grob[[i]]$heights[8:9] <- unit(c(60, 5), 'mm') # Plot area and X axis text space
+for(i in (lgrob_gene/2 + 1):lgrob_gene) scatter_gene_grob[[i]]$heights[7:8] <- unit(c(60, 5), 'mm') # Plot area and X axis text space
+
+# Proportion of cycling cells against number of captured cells:
+scatter_cell <- slapply(c('10x', 'SmartSeq2'), function(tch) {
+    slapply(tdata2[, sort(unique(cell_type))], function(ct) {
+        dt <- tdata2[tech == tch & cell_type == ct][, c('n_cell', 'prop') := .(log10(n_cell), 100*prop)]
+        xlims <- c(dt[, if(ceiling(min(n_cell)) == floor(max(n_cell))) floor(min(n_cell)) else min(n_cell)], dt[, max(n_cell)])
+        ylims <- c(0, dt[, max(10, max(prop))])
+        out <- ggplot(dt, aes(x = n_cell, y = prop)) +
+            geom_point() +
+            scale_x_continuous(breaks = seq(1, tdata2[, floor(max(n_cell))], 1), limits = xlims) +
+            scale_y_continuous(breaks = 100*seq(0, tdata2[, floor(max(10*prop))/10], 0.1), limits = ylims) +
+            theme(
+                panel.grid.minor = element_blank(),
+                panel.grid.major = element_line(linewidth = 0.3, colour = 'grey85'),
+                panel.border = element_rect(fill = NA),
+                panel.background = element_rect(fill = 'white'),
+                strip.background = element_rect(fill = NA),
+                strip.text.x = element_text(size = 16, margin = margin(l = 0, r = 0, t = 2, b = 8)),
+                strip.text.y = element_text(size = 16, margin = margin(l = 8, r = 2, t = 0, b = 0)),
+                axis.text = element_text(size = 14),
+                axis.title = element_blank()
+            )
+        rp <- rpos[.(tch, ct, 'n_cell')]
+        if(any(dt$o_cell)) {
+            out <- out + geom_smooth(data = dt[o_cell == FALSE], method = 'lm', colour = 'blue', se = FALSE)
+            out <- out + geom_smooth(data = dt, method = 'lm', colour = 'red', se = FALSE)
+            out <- out + annotate('text', label = dt[o_cell == FALSE, paste('r =', signif(cor(prop, n_cell), 2))], size = 5, colour = 'blue',
+                x = xlims[rp$x], y = ylims[rp$y], hjust = rp$x - 1, vjust = rp$y - 1)
+            out <- out + annotate('text', label = dt[, paste('r =', signif(cor(prop, n_cell), 2))], size = 5, colour = 'red',
+                x = xlims[rp$x], y = ylims[rp$y] - (rp$y - 1.5)*diff(ylims/5), hjust = rp$x - 1, vjust = rp$y - 1)
+        } else {
+            out <- out + geom_smooth(data = dt, method = 'lm', colour = 'purple', se = FALSE)
+            out <- out + annotate('text', label = dt[, paste('r =', signif(cor(prop, n_cell), 2))], size = 5, colour = 'purple',
+                x = xlims[rp$x], y = ylims[rp$y], hjust = rp$x - 1, vjust = rp$y - 1)
+        }
+        if(tch == '10x' & ct != 'T cell') out <- out + facet_grid(cols = vars(cell_type))
+        if(tch == '10x' & ct == 'T cell') out <- out + facet_grid(cols = vars(cell_type), rows = vars(tech))
+        if(tch == 'SmartSeq2' & ct == 'T cell') out <- out + facet_grid(rows = vars(tech))
+        return(out)
+    })
+})
+scatter_cell_grob <- lapply(unlist(scatter_cell, recursive = FALSE), ggplotGrob)
+lgrob_cell <- length(scatter_cell_grob)
+for(i in 1:lgrob_cell) {
+    l <- length(scatter_cell_grob[[i]]$widths)
+    if(i %in% c(1, lgrob_cell/2 + 1)) {
+        scatter_cell_grob[[i]]$widths[1] <- unit(12, 'mm') # Left margin
+    } else {
+        scatter_cell_grob[[i]]$widths[1] <- unit(2, 'mm') # Left margin
+    }
+    scatter_cell_grob[[i]]$widths[l] <- unit(2, 'mm') # Right margin
+}
+for(i in 1:lgrob_cell) scatter_cell_grob[[i]]$widths[4] <- unit(7, 'mm') # Y axis text space
+for(i in 1:lgrob_cell) scatter_cell_grob[[i]]$widths[5] <- unit(60, 'mm') # Plot area
+for(i in (1:2)*lgrob_cell/2) scatter_cell_grob[[i]]$widths[6] <- unit(7.5, 'mm') # Facet strip space
+for(i in 1:lgrob_cell) {
+    l <- length(scatter_cell_grob[[i]]$heights)
+    scatter_cell_grob[[i]]$heights[1] <- unit(2, 'mm') # Top margin
+    if(i %in% (lgrob_cell/2 + 1):lgrob_cell) {
+        scatter_cell_grob[[i]]$heights[l] <- unit(10, 'mm') # Bottom margin
+    } else {
+        scatter_cell_grob[[i]]$heights[l] <- unit(2, 'mm') # Bottom margin
+    }
+}
+for(i in 1:(lgrob_cell/2)) scatter_cell_grob[[i]]$heights[7] <- unit(7.5, 'mm') # Facet strip space
+for(i in 1:(lgrob_cell/2)) scatter_cell_grob[[i]]$heights[8:9] <- unit(c(60, 5), 'mm') # Plot area and X axis text space
+for(i in (lgrob_cell/2 + 1):lgrob_cell) scatter_cell_grob[[i]]$heights[7:8] <- unit(c(60, 5), 'mm') # Plot area and X axis text space
+
+
+
+
+
+# Phase bias:
+
+tcts_phase <- tdata2[!is.na(phase_bias), .N, by = .(cell_type, tech)][N >= 5, .(n_tech = length(unique(tech))), by = cell_type]
+tcts_phase <- tcts_phase[n_tech == 2, cell_type]
+tdata2_phase <- tdata2[!is.na(phase_bias) & cell_type %in% tcts_phase]
+
+# Get candidate outliers by looking at residuals:
+tdata2_phase[!is.na(phase_bias) & !is.na(n_gene), o_gene := {
+    r1 <- lm(phase_bias ~ n_gene)$residuals; r2 <- lm(n_gene ~ phase_bias)$residuals
+    r1 > quantile(r1, 0.75) + 1.5*IQR(r1) | r1 < quantile(r1, 0.25) - 1.5*IQR(r1) |
+        r2 > quantile(r2, 0.75) + 1.5*IQR(r2) | r2 < quantile(r2, 0.25) - 1.5*IQR(r2)
+}, by = .(tech, cell_type)]
+tdata2_phase[!is.na(phase_bias) & !is.na(n_cell), o_cell := {
+    r1 <- lm(phase_bias ~ n_cell)$residuals; r2 <- lm(n_cell ~ phase_bias)$residuals
+    r1 > quantile(r1, 0.75) + 1.5*IQR(r1) | r1 < quantile(r1, 0.25) - 1.5*IQR(r1) |
+        r2 > quantile(r2, 0.75) + 1.5*IQR(r2) | r2 < quantile(r2, 0.25) - 1.5*IQR(r2)
+}, by = .(tech, cell_type)]
+
+# Manually choose final list of outliers:
+tdata2_phase[, o_gene := FALSE]
+tdata2_phase[tech == '10x' & cell_type == 'T cell' & (phase_bias < -0.16 | n_gene > 3000), o_gene := TRUE]
+tdata2_phase[tech == 'SmartSeq2' & cell_type == 'Malignant' & n_gene < 4000, o_gene := TRUE]
+tdata2_phase[tech == 'SmartSeq2' & cell_type == 'T cell' & phase_bias < -0.45, o_gene := TRUE]
+tdata2_phase[, o_cell := FALSE]
+tdata2_phase[tech == '10x' & cell_type == 'T cell' & phase_bias < -0.16, o_cell := TRUE]
+tdata2_phase[tech == 'SmartSeq2' & cell_type == 'T cell' & phase_bias < -0.45, o_cell := TRUE]
+
+rpos_phase <- unique(tdata2_phase[, .(tech, cell_type)])[, .(v = c('n_gene', 'n_cell')), keyby = .(tech, cell_type)]
+rpos_phase[v == 'n_gene', c('x', 'y') := .(c(2, 2, 2, 1), c(1, 1, 2, 1))]
+rpos_phase[v == 'n_cell', c('x', 'y') := .(c(1, 1, 1, 1), c(2, 1, 2, 2))]
+setkey(rpos_phase, tech, cell_type, v)
+
+# Phase bias against complexity:
+scatter_gene_phase <- slapply(c('10x', 'SmartSeq2'), function(tch) {
+    slapply(tdata2_phase[, sort(unique(cell_type))], function(ct) {
+        dt <- tdata2_phase[tech == tch & cell_type == ct & !is.na(n_gene)][, n_gene := n_gene/1000]
+        xlims <- c(dt[, if(ceiling(min(n_gene)) == floor(max(n_gene))) floor(min(n_gene)) else min(n_gene)], dt[, max(n_gene)])
+        ylims <- dt[, c(min(0, min(phase_bias)), max(0.2, max(phase_bias)))]
+        out <- ggplot(dt, aes(x = n_gene, y = phase_bias)) +
+            geom_point() +
+            scale_x_continuous(breaks = seq(1, tdata2_phase[!is.na(n_gene), floor(max(n_gene))], 1), limits = xlims) +
+            scale_y_continuous(breaks = tdata2_phase[, seq(floor(min(10*phase_bias)/10), ceiling(max(10*phase_bias)/10), 0.2)], limits = ylims) +
+            theme(
+                panel.grid.minor = element_blank(),
+                panel.grid.major = element_line(linewidth = 0.3, colour = 'grey85'),
+                panel.border = element_rect(fill = NA),
+                panel.background = element_rect(fill = 'white'),
+                strip.background = element_rect(fill = NA),
+                strip.text.x = element_text(size = 16, margin = margin(l = 0, r = 0, t = 2, b = 8)),
+                strip.text.y = element_text(size = 16, margin = margin(l = 8, r = 2, t = 0, b = 0)),
+                axis.text = element_text(size = 14),
+                axis.title = element_blank()
+            )
+        rp <- rpos_phase[.(tch, ct, 'n_gene')]
+        if(any(dt$o_gene)) {
+            out <- out + geom_smooth(data = dt[o_gene == FALSE], method = 'lm', colour = 'blue', se = FALSE)
+            out <- out + geom_smooth(data = dt, method = 'lm', colour = 'red', se = FALSE)
+            out <- out + annotate('text', label = dt[o_gene == FALSE, paste('r =', signif(cor(phase_bias, n_gene), 2))], size = 5, colour = 'blue',
+                x = xlims[rp$x], y = ylims[rp$y], hjust = rp$x - 1, vjust = rp$y - 1)
+            out <- out + annotate('text', label = dt[, paste('r =', signif(cor(phase_bias, n_gene), 2))], size = 5, colour = 'red',
+                x = xlims[rp$x], y = ylims[rp$y] - (rp$y - 1.5)*diff(ylims/5), hjust = rp$x - 1, vjust = rp$y - 1)
+        } else {
+            out <- out + geom_smooth(data = dt, method = 'lm', colour = 'purple', se = FALSE)
+            out <- out + annotate('text', label = dt[, paste('r =', signif(cor(phase_bias, n_gene), 2))], size = 5, colour = 'purple',
+                x = xlims[rp$x], y = ylims[rp$y], hjust = rp$x - 1, vjust = rp$y - 1)
+        }
+        if(tch == '10x' & ct != 'T cell') out <- out + facet_grid(cols = vars(cell_type))
+        if(tch == '10x' & ct == 'T cell') out <- out + facet_grid(cols = vars(cell_type), rows = vars(tech))
+        if(tch == 'SmartSeq2' & ct == 'T cell') out <- out + facet_grid(rows = vars(tech))
+        return(out)
+    })
+})
+scatter_gene_phase_grob <- lapply(unlist(scatter_gene_phase, recursive = FALSE), ggplotGrob)
+lgrob_gene_phase <- length(scatter_gene_phase_grob)
+for(i in 1:lgrob_gene_phase) {
+    l <- length(scatter_gene_phase_grob[[i]]$widths)
+    if(i %in% c(1, lgrob_gene_phase/2 + 1)) {
+        scatter_gene_phase_grob[[i]]$widths[1] <- unit(12, 'mm') # Left margin
+    } else {
+        scatter_gene_phase_grob[[i]]$widths[1] <- unit(2, 'mm') # Left margin
+    }
+    scatter_gene_phase_grob[[i]]$widths[l] <- unit(2, 'mm') # Right margin
+}
+for(i in 1:lgrob_gene_phase) scatter_gene_phase_grob[[i]]$widths[4] <- unit(9, 'mm') # Y axis text space
+for(i in 1:lgrob_gene_phase) scatter_gene_phase_grob[[i]]$widths[5] <- unit(60, 'mm') # Plot area
+for(i in (1:2)*lgrob_gene_phase/2) scatter_gene_phase_grob[[i]]$widths[6] <- unit(7.5, 'mm') # Facet strip space
+for(i in 1:lgrob_gene_phase) {
+    l <- length(scatter_gene_phase_grob[[i]]$heights)
+    scatter_gene_phase_grob[[i]]$heights[1] <- unit(2, 'mm') # Top margin
+    if(i %in% (lgrob_gene_phase/2 + 1):lgrob_gene_phase) {
+        scatter_gene_phase_grob[[i]]$heights[l] <- unit(10, 'mm') # Bottom margin
+    } else {
+        scatter_gene_phase_grob[[i]]$heights[l] <- unit(2, 'mm') # Bottom margin
+    }
+}
+for(i in 1:(lgrob_gene_phase/2)) scatter_gene_phase_grob[[i]]$heights[7] <- unit(7.5, 'mm') # Facet strip space
+for(i in 1:(lgrob_gene_phase/2)) scatter_gene_phase_grob[[i]]$heights[8:9] <- unit(c(60, 5), 'mm') # Plot area and X axis text space
+for(i in (lgrob_gene_phase/2 + 1):lgrob_gene_phase) scatter_gene_phase_grob[[i]]$heights[7:8] <- unit(c(60, 5), 'mm') # Plot area and X axis text
+
+# Phase bias against number of captured cells:
+scatter_cell_phase <- slapply(c('10x', 'SmartSeq2'), function(tch) {
+    slapply(tdata2_phase[, sort(unique(cell_type))], function(ct) {
+        dt <- tdata2_phase[tech == tch & cell_type == ct][, n_cell := log10(n_cell)]
+        xlims <- c(dt[, if(ceiling(min(n_cell)) == floor(max(n_cell))) floor(min(n_cell)) else min(n_cell)], dt[, max(n_cell)])
+        ylims <- dt[, c(min(0, min(phase_bias)), max(0.2, max(phase_bias)))]
+        out <- ggplot(dt, aes(x = n_cell, y = phase_bias)) +
+            geom_point() +
+            scale_x_continuous(breaks = seq(1, tdata2_phase[!is.na(n_cell), floor(max(n_cell))], 1), limits = xlims) +
+            scale_y_continuous(breaks = tdata2_phase[, seq(floor(min(10*phase_bias)/10), ceiling(max(10*phase_bias)/10), 0.2)], limits = ylims) +
+            theme(
+                panel.grid.minor = element_blank(),
+                panel.grid.major = element_line(linewidth = 0.3, colour = 'grey85'),
+                panel.border = element_rect(fill = NA),
+                panel.background = element_rect(fill = 'white'),
+                strip.background = element_rect(fill = NA),
+                strip.text.x = element_text(size = 16, margin = margin(l = 0, r = 0, t = 2, b = 8)),
+                strip.text.y = element_text(size = 16, margin = margin(l = 8, r = 2, t = 0, b = 0)),
+                axis.text = element_text(size = 14),
+                axis.title = element_blank()
+            )
+        rp <- rpos_phase[.(tch, ct, 'n_cell')]
+        if(any(dt$o_cell)) {
+            out <- out + geom_smooth(data = dt[o_cell == FALSE], method = 'lm', colour = 'blue', se = FALSE)
+            out <- out + geom_smooth(data = dt, method = 'lm', colour = 'red', se = FALSE)
+            out <- out + annotate('text', label = dt[o_cell == FALSE, paste('r =', signif(cor(phase_bias, n_cell), 2))], size = 5, colour = 'blue',
+                x = xlims[rp$x], y = ylims[rp$y], hjust = rp$x - 1, vjust = rp$y - 1)
+            out <- out + annotate('text', label = dt[, paste('r =', signif(cor(phase_bias, n_cell), 2))], size = 5, colour = 'red',
+                x = xlims[rp$x], y = ylims[rp$y] - (rp$y - 1.5)*diff(ylims/5), hjust = rp$x - 1, vjust = rp$y - 1)
+        } else {
+            out <- out + geom_smooth(data = dt, method = 'lm', colour = 'purple', se = FALSE)
+            out <- out + annotate('text', label = dt[, paste('r =', signif(cor(phase_bias, n_cell), 2))], size = 5, colour = 'purple',
+                x = xlims[rp$x], y = ylims[rp$y], hjust = rp$x - 1, vjust = rp$y - 1)
+        }
+        if(tch == '10x' & ct != 'T cell') out <- out + facet_grid(cols = vars(cell_type))
+        if(tch == '10x' & ct == 'T cell') out <- out + facet_grid(cols = vars(cell_type), rows = vars(tech))
+        if(tch == 'SmartSeq2' & ct == 'T cell') out <- out + facet_grid(rows = vars(tech))
+        return(out)
+    })
+})
+scatter_cell_phase_grob <- lapply(unlist(scatter_cell_phase, recursive = FALSE), ggplotGrob)
+lgrob_cell_phase <- length(scatter_cell_phase_grob)
+for(i in 1:lgrob_cell_phase) {
+    l <- length(scatter_cell_phase_grob[[i]]$widths)
+    if(i %in% c(1, lgrob_cell_phase/2 + 1)) {
+        scatter_cell_phase_grob[[i]]$widths[1] <- unit(12, 'mm') # Left margin
+    } else {
+        scatter_cell_phase_grob[[i]]$widths[1] <- unit(2, 'mm') # Left margin
+    }
+    scatter_cell_phase_grob[[i]]$widths[l] <- unit(2, 'mm') # Right margin
+}
+for(i in 1:lgrob_cell_phase) scatter_cell_phase_grob[[i]]$widths[4] <- unit(9, 'mm') # Y axis text space
+for(i in 1:lgrob_cell_phase) scatter_cell_phase_grob[[i]]$widths[5] <- unit(60, 'mm') # Plot area
+for(i in (1:2)*lgrob_cell_phase/2) scatter_cell_phase_grob[[i]]$widths[6] <- unit(7.5, 'mm') # Facet strip space
+for(i in 1:lgrob_cell_phase) {
+    l <- length(scatter_cell_phase_grob[[i]]$heights)
+    scatter_cell_phase_grob[[i]]$heights[1] <- unit(2, 'mm') # Top margin
+    if(i %in% (lgrob_cell_phase/2 + 1):lgrob_cell_phase) {
+        scatter_cell_phase_grob[[i]]$heights[l] <- unit(10, 'mm') # Bottom margin
+    } else {
+        scatter_cell_phase_grob[[i]]$heights[l] <- unit(2, 'mm') # Bottom margin
+    }
+}
+for(i in 1:(lgrob_cell_phase/2)) scatter_cell_phase_grob[[i]]$heights[7] <- unit(7.5, 'mm') # Facet strip space
+for(i in 1:(lgrob_cell_phase/2)) scatter_cell_phase_grob[[i]]$heights[8:9] <- unit(c(60, 5), 'mm') # Plot area and X axis text space
+for(i in (lgrob_cell_phase/2 + 1):lgrob_cell_phase) scatter_cell_phase_grob[[i]]$heights[7:8] <- unit(c(60, 5), 'mm') # Plot area and X axis text
+
+
+
+
+
+w_prop <- sapply(scatter_gene_grob[1:(lgrob_gene/2)], function(x) sum(as.numeric(x$widths)))
+w_phase <- sapply(scatter_gene_phase_grob[1:(lgrob_gene_phase/2)], function(x) sum(as.numeric(x$widths)))
+h_prop <- sapply(scatter_gene_grob[c(1, lgrob_gene/2 + 1)], function(x) sum(as.numeric(x$heights)))
+h_phase <- sapply(scatter_gene_phase_grob[c(1, lgrob_gene_phase/2 + 1)], function(x) sum(as.numeric(x$heights)))
+
+corr_prop_gene <- t.test(tdata2[!is.na(n_gene), .(corr = cor(prop, n_gene)), by = .(tech, cell_type)]$corr)
+corr_prop_gene_o <- t.test(tdata2[!is.na(n_gene) & o_gene == FALSE, .(corr = cor(prop, n_gene)), by = .(tech, cell_type)]$corr)
+corr_prop_cell <- t.test(tdata2[!is.na(n_cell), .(corr = cor(prop, log10(n_cell))), by = .(tech, cell_type)]$corr)
+corr_prop_cell_o <- t.test(tdata2[!is.na(n_cell) & o_cell == FALSE, .(corr = cor(prop, log10(n_cell))), by = .(tech, cell_type)]$corr)
+corr_phase_gene <- t.test(tdata2_phase[!is.na(n_gene), .(corr = cor(phase_bias, n_gene)), by = .(tech, cell_type)]$corr)
+corr_phase_gene_o <- t.test(tdata2_phase[!is.na(n_gene) & o_gene == FALSE, .(corr = cor(phase_bias, n_gene)), by = .(tech, cell_type)]$corr)
+corr_phase_cell <- t.test(tdata2_phase[!is.na(n_cell), .(corr = cor(phase_bias, log10(n_cell))), by = .(tech, cell_type)]$corr)
+corr_phase_cell_o <- t.test(tdata2_phase[!is.na(n_cell) & o_cell == FALSE, .(corr = cor(phase_bias, log10(n_cell))), by = .(tech, cell_type)]$corr)
+title_gene <- ggplot() + theme_void() + theme(plot.title = element_text(size = 16), plot.subtitle = element_markdown(size = 14)) + labs(
+    title = 'Proportion of cycling cells vs. number of detected genes',
+    subtitle = paste0('<span style="color:blue">Mean correlation: r = ', signif(corr_prop_gene_o$estimate, 2), ', p = ',
+        signif(corr_prop_gene_o$p.value, 2), '</span> <span style="color:red">(with outliers: r = ', signif(corr_prop_gene$estimate, 2), ', p = ',
+        signif(corr_prop_gene$p.value, 2), ')</span>')
+)
+title_cell <- ggplot() + theme_void() + theme(plot.title = element_text(size = 16), plot.subtitle = element_markdown(size = 14)) + labs(
+    title = 'Proportion of cycling cells vs. number of captured cells',
+    subtitle = paste0('<span style="color:blue">Mean correlation: r = ', signif(corr_prop_cell_o$estimate, 2), ', p = ',
+        signif(corr_prop_cell_o$p.value, 2), '</span> <span style="color:red">(with outliers: r = ', signif(corr_prop_cell$estimate, 2), ', p = ',
+        signif(corr_prop_cell$p.value, 2), ')</span>')
+)
+title_gene_phase <- ggplot() + theme_void() + theme(plot.title = element_text(size = 16), plot.subtitle = element_markdown(size = 14)) + labs(
+    title = 'Phase bias vs. number of detected genes',
+    subtitle = paste0('<span style="color:blue">Mean corr.: r = ', signif(corr_phase_gene_o$estimate, 2), ', p = ',
+        signif(corr_phase_gene_o$p.value, 2), '</span> <span style="color:red">(+outliers: r = ', signif(corr_phase_gene$estimate, 2), ', p = ',
+        signif(corr_phase_gene$p.value, 2), ')</span>')
+)
+title_cell_phase <- ggplot() + theme_void() + theme(plot.title = element_text(size = 16), plot.subtitle = element_markdown(size = 14)) + labs(
+    title = 'Phase bias vs. number of captured cells',
+    subtitle = paste0('<span style="color:blue">Mean corr.: r = ', signif(corr_phase_cell_o$estimate, 2), ', p = ',
+        signif(corr_phase_cell_o$p.value, 2), '</span> <span style="color:red">(+outliers: r = ', signif(corr_phase_cell$estimate, 2), ', p = ',
+        signif(corr_phase_cell$p.value, 2), ')</span>')
+)
+
+plot_grid(
+    plot_grid(
+        plot_grid(
+            lab_plot('a'),
+            title_gene,
+            plot_grid(plotlist = scatter_gene_grob, nrow = 2, ncol = lgrob_gene/2, rel_widths = w_prop, rel_heights = h_prop) +
+                draw_label('(Number of detected genes)/1000', x = 0.51, y = 0.03, size = 16) +
+                draw_label('% cycling cells', x = 0.01, y = 0.51, size = 16, angle = 90),
+            ggplot() + theme_void(),
+            lab_plot('b'),
+            title_cell,
+            plot_grid(plotlist = scatter_cell_grob, nrow = 2, ncol = lgrob_cell/2, rel_widths = w_prop, rel_heights = h_prop) +
+                draw_label('log10(Number of cells)', x = 0.51, y = 0.03, size = 16) +
+                draw_label('% cycling cells', x = 0.01, y = 0.51, size = 16, angle = 90),
+            nrow = 7, ncol = 1, rel_heights = c(20, 20, sum(h_prop), 20, 20, 20, sum(h_prop))
+        ),
+        ggplot() + theme_void(),
+        nrow = 1, ncol = 2, rel_widths = c(sum(w_prop), 2*sum(w_phase) + 20 - sum(w_prop))
+    ),
+    ggplot() + theme_void(),
+    plot_grid(
+        lab_plot('c'),
+        ggplot() + theme_void(),
+        lab_plot('d'),
+        title_gene_phase,
+        ggplot() + theme_void(),
+        title_cell_phase,
+        plot_grid(plotlist = scatter_gene_phase_grob, nrow = 2, ncol = lgrob_gene_phase/2, rel_widths = w_phase, rel_heights = h_phase) +
+            draw_label('(Number of detected genes)/1000', x = 0.51, y = 0.03, size = 16) +
+            draw_label(expression((n['G1/S']~-~'n'['G2/M'])~'/'~n['cycling']), x = 0.02, y = 0.51, size = 16, angle = 90),
+        ggplot() + theme_void(),
+        plot_grid(plotlist = scatter_cell_phase_grob, nrow = 2, ncol = lgrob_cell_phase/2, rel_widths = w_phase, rel_heights = h_phase) +
+            draw_label('log10(Number of cells)', x = 0.51, y = 0.03, size = 16) +
+            draw_label(expression((n['G1/S']~-~'n'['G2/M'])~'/'~n['cycling']), x = 0.02, y = 0.51, size = 16, angle = 90),
+        nrow = 3, ncol = 3, rel_widths = c(sum(w_phase), 20, sum(w_phase)), rel_heights = c(20, 20, sum(h_phase))
+    ),
+    nrow = 3, ncol = 1, rel_heights = c(2*sum(h_prop) + 100, 20, 40 + sum(h_phase))
+)
